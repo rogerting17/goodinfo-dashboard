@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Streamlit App：Goodinfo 年增率 + 財務比率 + 雷達圖（Render / Google Drive 版）
+# Streamlit App：Goodinfo 年增率 + 財務比率 + 雷達圖（Render / Google Drive 版，完整）
 # ---------------------------------------------------------------
 import os, re, time, copy, requests
 import numpy as np
@@ -22,17 +22,13 @@ URL_GM  = "https://drive.google.com/file/d/1s8A_tFh4e8a1VxtYPJg0kocxoRjXlBIm/vie
 URL_OM  = "https://drive.google.com/file/d/18r5PwDngcyzGf1wfGHWbOLmLeKqMdEyg/view?usp=sharing"
 URL_CF  = "https://drive.google.com/file/d/1gVgb0FpgRHPK1RW9_ym4HqsQeYZCUm1f/view?usp=sharing"
 
-# Yahoo Finance 需要
 YF_HEADERS = {"User-Agent":"Mozilla/5.0"}
 
 # =========================
 # 工具：Drive 直連、讀檔、防掛
 # =========================
 def gdrive_to_direct(url: str) -> str:
-    """
-    將 Google Drive 的 'file/d/<id>/view?...' 轉成可下載直連:
-    https://drive.google.com/uc?export=download&id=<id>
-    """
+    """把 'file/d/<id>/view?...' 轉為可下載直連 uc?export=download&id=<id>"""
     m = re.search(r"/file/d/([^/]+)/", url)
     if not m:
         return url
@@ -40,12 +36,7 @@ def gdrive_to_direct(url: str) -> str:
     return f"https://drive.google.com/uc?export=download&id={fid}"
 
 def robust_read_csv(src: str, **kwargs) -> pd.DataFrame:
-    """
-    穩健讀取 CSV：
-    - 自動轉換 Google Drive 直連
-    - 嘗試多種編碼
-    - 簡單重試
-    """
+    """穩健讀取 CSV：Drive 直連、多編碼、重試"""
     url = gdrive_to_direct(src)
     encodings = [kwargs.pop("encoding", None), "utf-8-sig", "utf-8", "big5", "cp950"]
     tries = 3
@@ -59,13 +50,17 @@ def robust_read_csv(src: str, **kwargs) -> pd.DataFrame:
         time.sleep(0.8)
     raise last_err
 
+def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = df.columns.map(lambda x: str(x).replace("\xa0"," ").replace("\u3000"," ").strip())
+    return df
+
 # =========================
 # 1) 年增率：載入（寬轉長、年月->日期）
 # =========================
 @st.cache_data(show_spinner=True)
 def load_yoy_data(url: str) -> pd.DataFrame:
     df = robust_read_csv(url)
-    df.columns = df.columns.map(lambda x: str(x).replace("\xa0"," ").replace("\u3000"," ").strip())
+    df = clean_columns(df)
 
     # 固定處理「平均 年增率」欄位
     if "平均 年增率" in df.columns and "平均年增率" not in df.columns:
@@ -105,7 +100,7 @@ def load_financial_ratios(url_gm: str, url_om: str, url_cf: str) -> pd.DataFrame
     import re as _re
 
     gm = robust_read_csv(url_gm)
-    gm.columns = gm.columns.map(lambda x: str(x).replace("\xa0"," ").replace("\u3000"," ").strip())
+    gm = clean_columns(gm)
     gm_cols = [c for c in gm.columns if ("毛利" in c and "%" in c)]
     gm_m = gm.melt(id_vars=["代號","名稱"], value_vars=gm_cols, var_name="期間", value_name="毛利率")
     gm_m["季度"] = gm_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
@@ -113,7 +108,7 @@ def load_financial_ratios(url_gm: str, url_om: str, url_cf: str) -> pd.DataFrame
     gm_m["日期"] = pd.PeriodIndex(gm_m["季度"], freq="Q").to_timestamp("Q")
 
     om = robust_read_csv(url_om)
-    om.columns = om.columns.map(lambda x: str(x).replace("\xa0"," ").replace("\u3000"," ").strip())
+    om = clean_columns(om)
     om_cols = [c for c in om.columns if ("營益" in c and "%" in c)]
     om_m = om.melt(id_vars=["代號","名稱"], value_vars=om_cols, var_name="期間", value_name="營益率")
     om_m["季度"] = om_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
@@ -121,7 +116,7 @@ def load_financial_ratios(url_gm: str, url_om: str, url_cf: str) -> pd.DataFrame
     om_m["日期"] = pd.PeriodIndex(om_m["季度"], freq="Q").to_timestamp("Q")
 
     cf = robust_read_csv(url_cf)
-    cf.columns = cf.columns.map(lambda x: str(x).replace("\xa0"," ").replace("\u3000"," ").strip())
+    cf = clean_columns(cf)
     cf_cols = [c for c in cf.columns if _re.match(r"\d{2}Q\d.*營業活動", c)]
     cf_m = cf.melt(id_vars=["代號","名稱"], value_vars=cf_cols, var_name="期間", value_name="營業金流")
     cf_m["季度"] = cf_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
@@ -172,7 +167,7 @@ def fetch_history_from_2019(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # =========================
-# 4) 主題與 UI 控制（新）
+# 4) 主題與 UI 控制（新增：字體、主題、線型、雷達正規化）
 # =========================
 st.sidebar.title("📂 查詢條件 / 控制面板")
 
@@ -191,12 +186,19 @@ line_mode = "lines+markers" if line_mode_choice == "線 + 點" else "lines"
 # 連續成長月數（1~12）
 grow_n = st.sidebar.slider("📈 連續成長月數（年增率）", min_value=1, max_value=12, value=3)
 
+# 雷達圖正規化方法
+norm_choice = st.sidebar.selectbox(
+    "雷達圖正規化方法",
+    ["不正規化", "MinMax 0-100（全體）", "MinMax 0-100（僅該股）", "Z-score（全體）"],
+    index=1
+)
+show_real_labels = st.sidebar.checkbox("在雷達圖上顯示『實際值』標籤（不受正規化影響）", True)
+
 # 背景 / 文字顏色（搭配主題）
 BG_MAIN = "#0E1117" if is_dark else "#FFFFFF"
 TEXT_COLOR = "#FFFFFF" if is_dark else "#111111"
 PLOT_BG = "#111418" if is_dark else "#FFFFFF"
 PAPER_BG = "#0E1117" if is_dark else "#FFFFFF"
-AXIS_GRID = "#333A41" if is_dark else "#E6E6E6"
 
 st.markdown(
     f"""
@@ -205,11 +207,11 @@ st.markdown(
         background-color: {BG_MAIN};
         color: {TEXT_COLOR};
     }}
-    .css-10trblm, h1, h2, h3, h4, h5, h6, p, label, span {{
+    h1, h2, h3, h4, h5, h6, p, label, span {{
         color: {TEXT_COLOR} !important;
         font-size: {font_size}px !important;
     }}
-    .css-1d391kg, .css-12oz5g7, .stButton>button {{
+    .stButton>button {{
         font-size: {max(12, font_size-2)}px !important;
     }}
     </style>
@@ -255,23 +257,61 @@ show_kline = st.sidebar.checkbox("🕯️ 顯示 K 線 + 均線（Yahoo）", Tru
 show_fin = st.sidebar.checkbox("📊 顯示財務比率（毛利/營益/金流）", True)
 show_radar = st.sidebar.checkbox("🧭 年度雷達圖（毛利/營益/金流）", True)
 show_radar_mix = st.sidebar.checkbox("🧭 綜合雷達圖（毛利/營益/金流/營收年增率）", True)
-normalize_radar = st.sidebar.checkbox("⚖️ 雷達圖正規化 (0-100)", True)
 
 st.markdown(f"<h2 style='margin-top:0'>年增率 + K 線 + 財務比率 儀表板</h2>", unsafe_allow_html=True)
 
 # =========================
-# 7) 單一股票：年增率 + 產業平均 + K 線
+# 7) 正規化工具（雷達圖用）
 # =========================
-def normalize_values(values, all_data):
-    if not normalize_radar: return values
-    scaled = []
-    for i, v in enumerate(values):
-        col = all_data[i].dropna()
-        if len(col) == 0: scaled.append(0); continue
-        if col.max() == col.min(): scaled.append(50); continue
-        scaled.append((v - col.min()) / (col.max() - col.min()) * 100)
-    return scaled
+def normalize_series(value, series, method="MinMaxAll", fallback=50.0):
+    """
+    把 value 依照 series 的分佈做正規化。
+    method:
+      - "None": 回傳原值
+      - "MinMaxAll": 0~100，使用全體 series
+      - "MinMaxSelf": 0~100，使用該股自身歷史
+      - "ZAll": Z-score（平均=0，std=1），再映射為 0~100（50±?）
+    """
+    if method == "None":
+        return float(value) if pd.notna(value) else 0.0
 
+    s = pd.to_numeric(pd.Series(series), errors="coerce").dropna()
+    if len(s) == 0 or pd.isna(value):
+        return fallback
+
+    v = float(value)
+
+    if method == "MinMaxAll" or method == "MinMaxSelf":
+        lo, hi = s.min(), s.max()
+        if np.isclose(hi, lo):
+            return fallback
+        return (v - lo) / (hi - lo) * 100.0
+
+    if method == "ZAll":
+        mu, sigma = s.mean(), s.std(ddof=0)
+        if sigma == 0:
+            return fallback
+        z = (v - mu) / sigma
+        # 把 Z-score 線性映射到 0~100（假設 ±3σ 對應 0/100）
+        z = max(min(z, 3.0), -3.0)
+        return (z + 3.0) / 6.0 * 100.0
+
+    return float(value)
+
+def get_norm_method(choice: str, self_mode=False):
+    if choice == "不正規化":
+        return "None"
+    if choice == "MinMax 0-100（全體）":
+        return "MinMaxAll"
+    if choice == "MinMax 0-100（僅該股）":
+        return "MinMaxSelf"
+    if choice == "Z-score（全體）":
+        return "ZAll"
+    return "MinMaxAll"
+
+# =========================
+# 8) 單一股票：年增率 + 產業平均 + K 線
+# =========================
 if len(selected) == 1:
     code = opts[selected[0]]
 
@@ -321,7 +361,7 @@ if len(selected) == 1:
                 title=f"{code}.TW K 線 + 均線 + 成交量 + 月營收年增率 (含產業平均)",
                 hovermode="x unified", height=760, dragmode="pan",
                 font=dict(size=font_size, color=TEXT_COLOR),
-                paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PAPER_BG, plot_bgcolor=PAPER_BG,
                 xaxis=dict(rangeslider=dict(visible=True), type="date"),
                 yaxis=dict(title="股價"),
                 yaxis2=dict(title="月營收年增率 (%)", overlaying="y", side="right", showgrid=False),
@@ -330,54 +370,47 @@ if len(selected) == 1:
             st.plotly_chart(fig_k, use_container_width=True, config={"displaylogo": False, "modeBarButtonsToAdd": ["resetScale2d"]})
 
 # =========================
-# 8) 財務比率（單股） + 年度雷達圖 + 綜合雷達圖
+# 9) 財務比率（單股） + 年度雷達圖 + 綜合雷達圖
 # =========================
+def radar_text_color():
+    return "#E5E7EB" if is_dark else "#111827"
+
 if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
     code = opts[selected[0]]
     fin_s = df_fin[df_fin["代號"] == code].sort_values("日期")
-    yoy_s = df_yoy[df_yoy["代號"] == code].sort_values("日期")
+    yoy_s_single = df_yoy[df_yoy["代號"] == code].sort_values("日期")
 
+    # === 將季度轉換為連續日期（若來源仍是字串） ===
+    def convert_quarter_to_date(df):
+        if "日期" in df.columns:
+            df = df.copy()
+            if df["日期"].dtype == "object" or (len(df) and isinstance(df["日期"].iloc[0], str)):
+                df["日期"] = df["日期"].astype(str).str.extract(r"(\d{2}Q\d)")
+                df["日期"] = pd.to_datetime(
+                    df["日期"]
+                    .str.replace("Q1", "-03-31")
+                    .str.replace("Q2", "-06-30")
+                    .str.replace("Q3", "-09-30")
+                    .str.replace("Q4", "-12-31"),
+                    errors="coerce"
+                )
+        return df
+
+    fin_s = convert_quarter_to_date(fin_s)
+
+    # === 折線圖：毛利率 / 營益率 ===
     if show_fin:
         st.markdown("### 📊 財務比率趨勢")
-
-        # === 將季度轉換為連續日期（若來源仍是字串） ===
-        def convert_quarter_to_date(df):
-            if "日期" in df.columns:
-                df = df.copy()
-                if df["日期"].dtype == "object" or (len(df) and isinstance(df["日期"].iloc[0], str)):
-                    df["日期"] = df["日期"].astype(str).str.extract(r"(\d{2}Q\d)")
-                    df["日期"] = pd.to_datetime(
-                        df["日期"]
-                        .str.replace("Q1", "-03-31")
-                        .str.replace("Q2", "-06-30")
-                        .str.replace("Q3", "-09-30")
-                        .str.replace("Q4", "-12-31"),
-                        errors="coerce"
-                    )
-            return df
-
-        fin_s = convert_quarter_to_date(fin_s)
-
-        # === 折線圖：毛利率 / 營益率 ===
         ratio_cols = [c for c in ["毛利率", "營益率"] if c in fin_s.columns]
         if ratio_cols and not fin_s.empty:
             df_ratio = fin_s[["日期"] + ratio_cols].dropna(subset=["日期"])
             df_plot = df_ratio.melt(id_vars="日期", var_name="指標", value_name="數值")
             df_plot["數值"] = pd.to_numeric(df_plot["數值"], errors="coerce")
             df_plot = df_plot.sort_values("日期")
-
-            fig = px.line(
-                df_plot,
-                x="日期",
-                y="數值",
-                color="指標",
-                title=f"{code} 毛利率 / 營益率",
-            )
-            # 使用者選擇的折線樣式
+            fig = px.line(df_plot, x="日期", y="數值", color="指標", title=f"{code} 毛利率 / 營益率")
             for tr in fig.data:
                 tr.mode = line_mode
                 tr.connectgaps = True
-
             fig.update_layout(
                 template=plotly_template,
                 title_x=0.05,
@@ -385,7 +418,7 @@ if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
                 height=500,
                 legend_title_text="指標",
                 font=dict(size=font_size, color=TEXT_COLOR),
-                paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PAPER_BG, plot_bgcolor=PAPER_BG,
             )
             st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False, "modeBarButtonsToAdd": ["resetScale2d"]})
 
@@ -398,94 +431,156 @@ if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
                 hovermode="x unified",
                 height=400,
                 font=dict(size=font_size, color=TEXT_COLOR),
-                paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PAPER_BG, plot_bgcolor=PAPER_BG,
             )
             st.plotly_chart(fig_cf, use_container_width=True, config={"displaylogo": False, "modeBarButtonsToAdd": ["resetScale2d"]})
 
     # === 年份篩選邏輯 ===
     years_fin = sorted(fin_s["日期"].dt.year.dropna().unique().tolist()) if not fin_s.empty else []
-    years_yoy = sorted(yoy_s["日期"].dt.year.dropna().unique().tolist()) if not yoy_s.empty else []
+    years_yoy = sorted(yoy_s_single["日期"].dt.year.dropna().unique().tolist()) if not yoy_s_single.empty else []
     all_years = sorted(set(years_fin) | set(years_yoy))
     default_years = all_years[-1:] if all_years else []
 
-    # ---- 年度雷達圖 ----
-    def radar_text_color():
-        return "#E5E7EB" if is_dark else "#111827"
+    # ---- 雷達：正規化方法解析 ----
+    norm_method = get_norm_method(norm_choice)
 
+    def norm_value(v, all_series, self_series):
+        if norm_method == "None":
+            return v
+        if norm_method == "MinMaxSelf":
+            return normalize_series(v, self_series, method="MinMaxSelf", fallback=50.0)
+        if norm_method == "MinMaxAll":
+            return normalize_series(v, all_series, method="MinMaxAll", fallback=50.0)
+        if norm_method == "ZAll":
+            return normalize_series(v, all_series, method="ZAll", fallback=50.0)
+        return v
+
+    # ---- 年度雷達圖（毛利率 / 營益率 / 營業金流）----
     if show_radar:
         st.markdown("### 🧭 年度雷達圖（毛利率 / 營益率 / 營業金流）")
-        st.caption("💡 快速提示：雙擊圖中心可快速恢復原始大小")
+        st.caption("💡 提示：雷達半徑依『正規化』縮放，標籤顯示的是『實際值』不受影響（若有開啟）。")
         chosen_years = st.multiselect("選擇年份（財務比率雷達圖）", all_years, default=default_years, key="radar_fin_years")
+
         if chosen_years:
             categories = ["毛利率","營益率","營業金流"]
+            # 全體分佈（用於 MinMaxAll / ZAll）
             all_data = [df_fin["毛利率"], df_fin["營益率"], df_fin["營業金流"]]
-            fig_radar = go.Figure(); colors = px.colors.qualitative.Bold
+            # 該股自身分佈（用於 MinMaxSelf）
+            self_data = [fin_s["毛利率"], fin_s["營益率"], fin_s["營業金流"]]
+
+            fig_radar = go.Figure()
+            colors = px.colors.qualitative.Bold
+
             for i, yr in enumerate(chosen_years):
                 color = colors[i % len(colors)]
                 yr_df = fin_s[fin_s["日期"].dt.year == yr].sort_values("日期").tail(1)
-                values = [
-                    yr_df["毛利率"].values[0] if not yr_df.empty else 0,
-                    yr_df["營益率"].values[0] if not yr_df.empty else 0,
-                    yr_df["營業金流"].values[0] if not yr_df.empty else 0,
+
+                real_vals = [
+                    float(yr_df["毛利率"].values[0]) if not yr_df.empty and pd.notna(yr_df["毛利率"].values[0]) else 0.0,
+                    float(yr_df["營益率"].values[0]) if not yr_df.empty and pd.notna(yr_df["營益率"].values[0]) else 0.0,
+                    float(yr_df["營業金流"].values[0]) if not yr_df.empty and pd.notna(yr_df["營業金流"].values[0]) else 0.0,
                 ]
-                scaled = normalize_values(values, all_data)
+                norm_vals = [
+                    norm_value(real_vals[0], all_data[0], self_data[0]),
+                    norm_value(real_vals[1], all_data[1], self_data[1]),
+                    norm_value(real_vals[2], all_data[2], self_data[2]),
+                ]
+
+                label_texts = [
+                    f"{real_vals[0]:.1f}%" if show_real_labels else "",
+                    f"{real_vals[1]:.1f}%" if show_real_labels else "",
+                    f"{real_vals[2]:.1f}"   if show_real_labels else "",
+                ]
+
                 fig_radar.add_trace(go.Scatterpolar(
-                    r=scaled, theta=categories, fill="toself", name=str(yr),
-                    line=dict(width=2), mode="lines+markers+text",
-                    text=[f"{v:.1f}" for v in values], textfont=dict(color=radar_text_color(), size=font_size)
+                    r=norm_vals,
+                    theta=categories,
+                    fill="toself",
+                    name=str(yr),
+                    line=dict(width=2),
+                    mode="lines+markers+text" if show_real_labels else "lines+markers",
+                    text=label_texts,
+                    textfont=dict(color=radar_text_color(), size=font_size),
                 ))
+
             fig_radar.update_layout(
                 template=plotly_template,
-                polar=dict(radialaxis=dict(visible=True, range=[0,100] if normalize_radar else None)),
+                polar=dict(radialaxis=dict(visible=True, range=[0,100] if norm_method != "None" else None)),
                 title=f"{code} 財務比率雷達圖（年度比較）",
                 showlegend=True,
                 font=dict(size=font_size, color=TEXT_COLOR),
-                paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PAPER_BG, plot_bgcolor=PAPER_BG,
             )
             st.plotly_chart(fig_radar, use_container_width=True, config={"displaylogo": False})
 
-    # ---- 綜合雷達圖 ----
+    # ---- 綜合雷達圖（毛利率 / 營益率 / 營業金流 / 月營收年增率）----
     if show_radar_mix:
-        st.markdown("### 🧭 綜合雷達圖（毛利率 / 營益率 / 營業金流 / 營收年增率）")
-        st.caption("💡 快速提示：雙擊圖中心可快速恢復原始大小")
+        st.markdown("### 🧭 綜合雷達圖（毛利率 / 營益率 / 營業金流 / 月營收年增率）")
+        st.caption("💡 半徑依『正規化』縮放，標籤文字永遠呈現實際值（% / 億）以避免誤解。")
         chosen_years2 = st.multiselect("選擇年份（綜合雷達圖）", all_years, default=default_years, key="radar_mix_years")
+
         if chosen_years2:
             categories_all = ["毛利率","營益率","營業金流","月營收年增率"]
-            all_data = [df_fin["毛利率"], df_fin["營益率"], df_fin["營業金流"], df_yoy["年增率"]]
-            fig_radar_all = go.Figure(); colors = px.colors.qualitative.Dark24
+            # 全體分佈
+            all_data_mix = [df_fin["毛利率"], df_fin["營益率"], df_fin["營業金流"], df_yoy["年增率"]]
+            # 該股自身分佈
+            self_data_mix = [fin_s["毛利率"], fin_s["營益率"], fin_s["營業金流"], yoy_s_single["年增率"]]
+
+            fig_radar_all = go.Figure()
+            colors = px.colors.qualitative.Dark24
+
             for i, yr in enumerate(chosen_years2):
                 color = colors[i % len(colors)]
                 latest_fin = fin_s[fin_s["日期"].dt.year == yr].sort_values("日期").tail(1)
-                latest_yoy = yoy_s[yoy_s["日期"].dt.year == yr].sort_values("日期").tail(1)
-                values = [
-                    latest_fin["毛利率"].values[0] if not latest_fin.empty else 0,
-                    latest_fin["營益率"].values[0] if not latest_fin.empty else 0,
-                    latest_fin["營業金流"].values[0] if not latest_fin.empty else 0,
-                    latest_yoy["年增率"].values[0] if not latest_yoy.empty else 0,
+                latest_yoy = yoy_s_single[yoy_s_single["日期"].dt.year == yr].sort_values("日期").tail(1)
+
+                real_vals = [
+                    float(latest_fin["毛利率"].values[0]) if not latest_fin.empty and pd.notna(latest_fin["毛利率"].values[0]) else 0.0,
+                    float(latest_fin["營益率"].values[0]) if not latest_fin.empty and pd.notna(latest_fin["營益率"].values[0]) else 0.0,
+                    float(latest_fin["營業金流"].values[0]) if not latest_fin.empty and pd.notna(latest_fin["營業金流"].values[0]) else 0.0,
+                    float(latest_yoy["年增率"].values[0]) if not latest_yoy.empty and pd.notna(latest_yoy["年增率"].values[0]) else 0.0,
                 ]
-                scaled = normalize_values(values, all_data)
+                norm_vals = [
+                    norm_value(real_vals[0], all_data_mix[0], self_data_mix[0]),
+                    norm_value(real_vals[1], all_data_mix[1], self_data_mix[1]),
+                    norm_value(real_vals[2], all_data_mix[2], self_data_mix[2]),
+                    norm_value(real_vals[3], all_data_mix[3], self_data_mix[3]),
+                ]
+                label_texts = [
+                    f"{real_vals[0]:.1f}%" if show_real_labels else "",
+                    f"{real_vals[1]:.1f}%" if show_real_labels else "",
+                    f"{real_vals[2]:.1f}"   if show_real_labels else "",
+                    f"{real_vals[3]:.1f}%" if show_real_labels else "",
+                ]
+
                 fig_radar_all.add_trace(go.Scatterpolar(
-                    r=scaled, theta=categories_all, fill="toself", name=str(yr),
-                    line=dict(width=2), mode="lines+markers+text",
-                    text=[f"{v:.1f}" for v in values], textfont=dict(color=radar_text_color(), size=font_size)
+                    r=norm_vals,
+                    theta=categories_all,
+                    fill="toself",
+                    name=str(yr),
+                    line=dict(width=2),
+                    mode="lines+markers+text" if show_real_labels else "lines+markers",
+                    text=label_texts,
+                    textfont=dict(color=radar_text_color(), size=font_size)
                 ))
+
             fig_radar_all.update_layout(
                 template=plotly_template,
-                polar=dict(radialaxis=dict(visible=True, range=[0,100] if normalize_radar else None)),
+                polar=dict(radialaxis=dict(visible=True, range=[0,100] if norm_method != "None" else None)),
                 title=f"{code} 綜合財務 + 營收雷達圖（年度比較）",
                 showlegend=True,
                 font=dict(size=font_size, color=TEXT_COLOR),
-                paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PAPER_BG, plot_bgcolor=PAPER_BG,
             )
             st.plotly_chart(fig_radar_all, use_container_width=True, config={"displaylogo": False})
 
 # =========================
-# 9) 平均年增率排行榜
+# 10) 平均年增率排行榜
 # =========================
 with st.expander("🏆 平均年增率排行榜 Top 10", True):
     try:
         df_raw = robust_read_csv(URL_YOY)
-        df_raw.columns = df_raw.columns.map(lambda x: str(x).replace("\xa0"," ").replace("\u3000"," ").strip())
+        df_raw = clean_columns(df_raw)
         avg_col = next((c for c in df_raw.columns if c.strip() in ("平均年增率","平均 年增率")), None)
         if avg_col:
             df_avg = df_raw[["代號","名稱", avg_col]].rename(columns={avg_col:"平均年增率"}).dropna()
@@ -498,13 +593,11 @@ with st.expander("🏆 平均年增率排行榜 Top 10", True):
         st.warning(f"排行榜生成失敗：{e}")
 
 # =========================
-# 10) 連續 N 個月 年增率連續成長（滑桿控制 N）
+# 11) 連續 N 個月 年增率連續成長（滑桿控制 N）
 # =========================
 with st.expander(f"📈 近 {grow_n} 個月年增率連續成長", True):
     df_temp = df_yoy.dropna(subset=["日期"]).copy()
-    # 只取每檔股票的最近 N 個月資料來檢查是否嚴格遞增
     result = []
-    # 找到全體共有的最近月份序列（避免不同股月份稀疏造成比較不一致）
     unique_months = sorted(df_temp["日期"].dropna().unique())
     if len(unique_months) >= grow_n:
         target_months = unique_months[-grow_n:]
@@ -512,7 +605,7 @@ with st.expander(f"📈 近 {grow_n} 個月年增率連續成長", True):
         for sid in df_lN["代號"].unique():
             d = df_lN[df_lN["代號"] == sid].sort_values("日期")
             if len(d) == grow_n:
-                vals = d["年增率"].astype(float).values
+                vals = pd.to_numeric(d["年增率"], errors="coerce").values
                 if np.all(np.diff(vals) > 0):  # 嚴格遞增
                     row = {
                         "代號": sid,
@@ -534,7 +627,7 @@ with st.expander(f"📈 近 {grow_n} 個月年增率連續成長", True):
         st.info(f"目前沒有股票符合『近 {grow_n} 個月連續成長』條件。")
 
 # =========================
-# 11) 多檔股票 vs 產業平均 年增率趨勢
+# 12) 多檔股票 vs 產業平均 年增率趨勢
 # =========================
 with st.expander("🧯 多檔股票與產業平均的年增率趨勢", False):
     all_years_yoy = sorted(df_yoy["日期"].dt.year.dropna().unique())
@@ -568,7 +661,7 @@ with st.expander("🧯 多檔股票與產業平均的年增率趨勢", False):
                 template=plotly_template,
                 hovermode="x unified", height=520,
                 font=dict(size=font_size, color=TEXT_COLOR),
-                paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PAPER_BG, plot_bgcolor=PAPER_BG,
             )
         fig_full.update_layout(title="📊 全期年增率趨勢")
         st.plotly_chart(fig_full, use_container_width=True, config={"displaylogo": False, "modeBarButtonsToAdd": ["resetScale2d"]})
@@ -580,3 +673,10 @@ with st.expander("🧯 多檔股票與產業平均的年增率趨勢", False):
 # 尾註
 # =========================
 st.caption("小提醒：年增率為『月資料』，財務比率為『季資料』。")
+
+# =========================
+# Render（選擇性）啟動提示
+# =========================
+if __name__ == "__main__":
+    # Streamlit 由 'streamlit run app.py' 啟動；此區僅供本地 debug 提示
+    print("Run with: streamlit run app.py --server.port 8501 --server.address 0.0.0.0")
