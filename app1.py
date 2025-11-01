@@ -99,26 +99,40 @@ def load_yoy_data(src: str) -> pd.DataFrame:
     return df_m
 
 # =========================
+# =========================
 # 2) 財務比率（毛利/營益/金流）載入與整理
 # =========================
 @st.cache_data(show_spinner=True)
 def load_financial_ratios(url_gm: str, url_om: str, url_cf: str) -> pd.DataFrame:
     """
     從 Google Drive 載入毛利率、營益率、營業金流三份 CSV，
-    若最新季度資料缺值過多，則沿用上一季並顯示提示。
+    自動容錯欄位名稱、移除空白、若最新季度資料缺值過多則沿用上一季。
     """
     import re as _re
 
-    # === 小函式：載入 + 篩欄 ===
-    def _load_and_clean(url, keyword):
+    # === 強化欄位偵測與清理 ===
+    def _load_and_detect(url, keyword_pattern):
         df = robust_read_csv(url)
         df = clean_columns(df)
-        cols = [c for c in df.columns if (_re.match(r"\d{2}Q\d", c) and keyword in c)]
+        cols = []
+        for c in df.columns:
+            c_clean = re.sub(r"[\s\u3000\xa0]+", "", str(c))  # 移除全形與半形空白
+            if re.search(r"\d{2}Q\d", c_clean) and re.search(keyword_pattern, c_clean):
+                cols.append(c)
         return df, cols
 
-    gm, gm_cols = _load_and_clean(url_gm, "毛利")
-    om, om_cols = _load_and_clean(url_om, "營益")
-    cf, cf_cols = _load_and_clean(url_cf, "營業活動")
+    # --- 分別載入三份資料 ---
+    gm, gm_cols = _load_and_detect(url_gm, r"毛利")
+    om, om_cols = _load_and_detect(url_om, r"(營業利益|營益)")
+    cf, cf_cols = _load_and_detect(url_cf, r"(營業活動|現金流)")
+
+    # 若仍抓不到欄位就提示
+    if not gm_cols:
+        st.warning("⚠️ 無法偵測到『毛利率』欄位，請確認檔案是否包含『毛利率(%)』等欄名。")
+    if not om_cols:
+        st.warning("⚠️ 無法偵測到『營益率』欄位，請確認檔案是否包含『營業利益率(%)』或『營益率(%)』等欄名。")
+    if not cf_cols:
+        st.warning("⚠️ 無法偵測到『營業活動現金流量』欄位，請確認檔案格式。")
 
     # === 通用季度補值邏輯（三者共用） ===
     def apply_latest_quarter_fix(df, cols, label):
@@ -138,7 +152,8 @@ def load_financial_ratios(url_gm: str, url_om: str, url_cf: str) -> pd.DataFrame
 
     # === 寬轉長 ===
     def melt_and_parse(df, cols, val_name):
-        df_m = df.melt(id_vars=["代號","名稱"], value_vars=cols, var_name="期間", value_name=val_name)
+        df_m = df.melt(id_vars=["代號", "名稱"], value_vars=cols,
+                       var_name="期間", value_name=val_name)
         df_m["季度"] = df_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
         df_m = df_m.dropna(subset=["季度"])
         df_m["日期"] = pd.PeriodIndex(df_m["季度"], freq="Q").to_timestamp("Q")
@@ -155,14 +170,15 @@ def load_financial_ratios(url_gm: str, url_om: str, url_cf: str) -> pd.DataFrame
     cf_m["更新狀態"] = status_flag
 
     df_fin = gm_m.merge(
-        om_m[["代號","名稱","日期","營益率"]], on=["代號","名稱","日期"], how="outer"
+        om_m[["代號", "名稱", "日期", "營益率"]], on=["代號", "名稱", "日期"], how="outer"
     ).merge(
-        cf_m[["代號","名稱","日期","營業金流"]], on=["代號","名稱","日期"], how="outer"
+        cf_m[["代號", "名稱", "日期", "營業金流"]], on=["代號", "名稱", "日期"], how="outer"
     )
 
-    df_fin = df_fin.sort_values(["代號","日期"]).reset_index(drop=True)
+    df_fin = df_fin.sort_values(["代號", "日期"]).reset_index(drop=True)
     df_fin["更新狀態"] = status_flag
     return df_fin
+
 
 
 # =========================
