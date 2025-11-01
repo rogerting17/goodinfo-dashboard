@@ -103,51 +103,67 @@ def load_yoy_data(src: str) -> pd.DataFrame:
 # =========================
 @st.cache_data(show_spinner=True)
 def load_financial_ratios(url_gm: str, url_om: str, url_cf: str) -> pd.DataFrame:
+    """
+    從 Google Drive 載入毛利率、營益率、營業金流三份 CSV，
+    若最新季度資料缺值過多，則沿用上一季並顯示提示。
+    """
     import re as _re
 
-    gm = robust_read_csv(url_gm)
-    gm = clean_columns(gm)
-    gm_cols = [c for c in gm.columns if ("毛利" in c and "%" in c)]
-    gm_m = gm.melt(id_vars=["代號","名稱"], value_vars=gm_cols, var_name="期間", value_name="毛利率")
-    gm_m["季度"] = gm_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
-    gm_m = gm_m.dropna(subset=["季度"])
-    gm_m["日期"] = pd.PeriodIndex(gm_m["季度"], freq="Q").to_timestamp("Q")
+    # === 小函式：載入 + 篩欄 ===
+    def _load_and_clean(url, keyword):
+        df = robust_read_csv(url)
+        df = clean_columns(df)
+        cols = [c for c in df.columns if (_re.match(r"\d{2}Q\d", c) and keyword in c)]
+        return df, cols
 
-    om = robust_read_csv(url_om)
-    om = clean_columns(om)
-    om_cols = [c for c in om.columns if ("營益" in c and "%" in c)]
-    om_m = om.melt(id_vars=["代號","名稱"], value_vars=om_cols, var_name="期間", value_name="營益率")
-    om_m["季度"] = om_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
-    om_m = om_m.dropna(subset=["季度"])
-    om_m["日期"] = pd.PeriodIndex(om_m["季度"], freq="Q").to_timestamp("Q")
+    gm, gm_cols = _load_and_clean(url_gm, "毛利")
+    om, om_cols = _load_and_clean(url_om, "營益")
+    cf, cf_cols = _load_and_clean(url_cf, "營業活動")
 
-    cf = robust_read_csv(url_cf)
-    cf = clean_columns(cf)
-    cf_cols = [c for c in cf.columns if _re.match(r"\d{2}Q\d.*營業活動", c)]
+    # === 通用季度補值邏輯（三者共用） ===
+    def apply_latest_quarter_fix(df, cols, label):
+        if not cols:
+            return df, f"⚠️ 無 {label} 資料"
+        last_col = cols[-1]
+        prev_col = cols[-2] if len(cols) > 1 else None
+        valid_ratio = df[last_col].notna().sum() / max(len(df), 1)
+        if valid_ratio < 0.3 and prev_col:
+            df[last_col] = df[prev_col]
+            return df, f"⚠️ 最新季度「{last_col}」({label}) 未完整，暫以「{prev_col}」沿用"
+        return df, f"✅ 使用最新季度「{last_col}」({label})"
 
-    # --- 最新季度完整性檢查：不完整則在記憶體沿用上一季，並回傳狀態字串 ---
-    status_flag = "（最新季度資料完整）"
-    if cf_cols:
-        last_col = cf_cols[-1]
-        prev_col = cf_cols[-2] if len(cf_cols) > 1 else None
-        valid_ratio = cf[last_col].notna().sum() / max(len(cf), 1)
+    gm, gm_status = apply_latest_quarter_fix(gm, gm_cols, "毛利率")
+    om, om_status = apply_latest_quarter_fix(om, om_cols, "營益率")
+    cf, cf_status = apply_latest_quarter_fix(cf, cf_cols, "營業金流")
 
-        if valid_ratio < 0.3 and prev_col is not None:
-            # 僅在記憶體暫代，不寫回檔案
-            cf[last_col] = cf[prev_col]
-            status_flag = f"⚠️ 最新季度「{last_col}」尚未完整，暫以「{prev_col}」沿用顯示"
-        else:
-            status_flag = f"✅ 使用最新季度「{last_col}」"
+    # === 寬轉長 ===
+    def melt_and_parse(df, cols, val_name):
+        df_m = df.melt(id_vars=["代號","名稱"], value_vars=cols, var_name="期間", value_name=val_name)
+        df_m["季度"] = df_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
+        df_m = df_m.dropna(subset=["季度"])
+        df_m["日期"] = pd.PeriodIndex(df_m["季度"], freq="Q").to_timestamp("Q")
+        return df_m
 
-    cf_m = cf.melt(id_vars=["代號","名稱"], value_vars=cf_cols, var_name="期間", value_name="營業金流")
-    cf_m["季度"] = cf_m["期間"].str.extract(r"(\d{2}Q\d)")[0]
-    cf_m["日期"] = pd.PeriodIndex(cf_m["季度"], freq="Q").to_timestamp("Q")
-    cf_m["更新狀態"] = status_flag  # 顯示提示用
+    gm_m = melt_and_parse(gm, gm_cols, "毛利率")
+    om_m = melt_and_parse(om, om_cols, "營益率")
+    cf_m = melt_and_parse(cf, cf_cols, "營業金流")
 
-    df_fin = gm_m.merge(om_m[["代號","名稱","日期","營益率"]], on=["代號","名稱","日期"], how="outer")
-    df_fin = df_fin.merge(cf_m, on=["代號","名稱","日期"], how="outer")
+    # === 合併 & 狀態說明 ===
+    status_flag = f"{gm_status}；{om_status}；{cf_status}"
+    gm_m["更新狀態"] = status_flag
+    om_m["更新狀態"] = status_flag
+    cf_m["更新狀態"] = status_flag
+
+    df_fin = gm_m.merge(
+        om_m[["代號","名稱","日期","營益率"]], on=["代號","名稱","日期"], how="outer"
+    ).merge(
+        cf_m[["代號","名稱","日期","營業金流"]], on=["代號","名稱","日期"], how="outer"
+    )
+
     df_fin = df_fin.sort_values(["代號","日期"]).reset_index(drop=True)
+    df_fin["更新狀態"] = status_flag
     return df_fin
+
 
 # =========================
 # 3) Yahoo Finance：日 K 線
