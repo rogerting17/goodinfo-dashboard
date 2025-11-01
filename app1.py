@@ -402,6 +402,20 @@ if len(selected) == 1:
 def radar_text_color():
     return "#E5E7EB" if is_dark else "#111827"
 
+# === 個股沿用上一季邏輯 ===
+def get_latest_with_fallback(df, year):
+    """取指定年度的最後一季；若該年無有效值則沿用上一季"""
+    df_y = df[df["日期"].dt.year == year].sort_values("日期")
+    if not df_y.empty:
+        return df_y.tail(1)
+    # 若該年無資料 → 向前找上一季
+    df_prev = df[df["日期"] < pd.Timestamp(year=year, month=1, day=1)].sort_values("日期")
+    if not df_prev.empty:
+        last_prev = df_prev.tail(1)
+        st.warning(f"⚠️ {year} 年資料未公布，已沿用上一季（{last_prev['日期'].iloc[0].strftime('%Y-%m-%d')}）")
+        return last_prev
+    return pd.DataFrame()  # 若無上一季也沒資料則回傳空
+
 if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
     code = opts[selected[0]]
     fin_s = df_fin[df_fin["代號"] == code].sort_values("日期")
@@ -485,19 +499,18 @@ if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
             return normalize_series(v, all_series, method="ZAll", fallback=50.0)
         return v
 
-    # 年度雷達圖（毛利率 / 營益率 / 營業金流）
+    # 年度雷達圖
     if show_radar:
         st.markdown("### 🧭 年度雷達圖（毛利率 / 營益率 / 營業金流）")
-        st.caption("💡 提示：雷達半徑依『正規化』縮放，標籤顯示的是『實際值』（不受正規化影響）。")
+        st.caption("💡 提示：若該年資料未公布，將自動沿用上一季。")
         chosen_years = st.multiselect("選擇年份（財務比率雷達圖）", all_years, default=default_years, key="radar_fin_years")
         if chosen_years:
             categories = ["毛利率","營益率","營業金流"]
             all_data = [df_fin["毛利率"], df_fin["營益率"], df_fin["營業金流"]]
             self_data = [fin_s["毛利率"], fin_s["營益率"], fin_s["營業金流"]]
             fig_radar = go.Figure()
-            colors = px.colors.qualitative.Bold
-            for i, yr in enumerate(chosen_years):
-                latest_fin = fin_s[fin_s["日期"].dt.year == yr].sort_values("日期").tail(1)
+            for yr in chosen_years:
+                latest_fin = get_latest_with_fallback(fin_s, yr)
                 real_vals = [
                     float(latest_fin["毛利率"].values[0]) if not latest_fin.empty and pd.notna(latest_fin["毛利率"].values[0]) else 0.0,
                     float(latest_fin["營益率"].values[0]) if not latest_fin.empty and pd.notna(latest_fin["營益率"].values[0]) else 0.0,
@@ -510,8 +523,8 @@ if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
                 ]
                 fig_radar.add_trace(go.Scatterpolar(
                     r=norm_vals, theta=categories, fill="toself", name=str(yr),
-                    line=dict(width=2), mode="lines+markers+text" if show_real_labels else "lines+markers",
-                    text=[f"{real_vals[0]:.1f}%", f"{real_vals[1]:.1f}%", f"{real_vals[2]:.1f}"] if show_real_labels else None,
+                    mode="lines+markers+text" if show_real_labels else "lines+markers",
+                    text=[f"{v:.1f}" for v in real_vals] if show_real_labels else None,
                     textfont=dict(color=radar_text_color(), size=font_size),
                 ))
             fig_radar.update_layout(
@@ -524,20 +537,19 @@ if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
             )
             st.plotly_chart(fig_radar, use_container_width=True, config={"displaylogo": False})
 
-    # 綜合雷達圖（加上月營收年增率）
+    # 綜合雷達圖
     if show_radar_mix:
         st.markdown("### 🧭 綜合雷達圖（毛利率 / 營益率 / 營業金流 / 月營收年增率）")
-        st.caption("💡 半徑依『正規化』縮放，標籤永遠顯示實際值（% / 億）。")
+        st.caption("💡 若該年資料未公布，將自動沿用上一季。")
         chosen_years2 = st.multiselect("選擇年份（綜合雷達圖）", all_years, default=default_years, key="radar_mix_years")
         if chosen_years2:
             categories_all = ["毛利率","營益率","營業金流","月營收年增率"]
             all_data_mix = [df_fin["毛利率"], df_fin["營益率"], df_fin["營業金流"], df_yoy["年增率"]]
             self_data_mix = [fin_s["毛利率"], fin_s["營益率"], fin_s["營業金流"], yoy_s_single["年增率"]]
             fig_radar_all = go.Figure()
-            colors = px.colors.qualitative.Dark24
-            for i, yr in enumerate(chosen_years2):
-                latest_fin = fin_s[fin_s["日期"].dt.year == yr].sort_values("日期").tail(1)
-                latest_yoy = yoy_s_single[yoy_s_single["日期"].dt.year == yr].sort_values("日期").tail(1)
+            for yr in chosen_years2:
+                latest_fin = get_latest_with_fallback(fin_s, yr)
+                latest_yoy = get_latest_with_fallback(yoy_s_single, yr)
                 real_vals = [
                     float(latest_fin["毛利率"].values[0]) if not latest_fin.empty and pd.notna(latest_fin["毛利率"].values[0]) else 0.0,
                     float(latest_fin["營益率"].values[0]) if not latest_fin.empty and pd.notna(latest_fin["營益率"].values[0]) else 0.0,
@@ -552,7 +564,7 @@ if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
                 ]
                 fig_radar_all.add_trace(go.Scatterpolar(
                     r=norm_vals, theta=categories_all, fill="toself", name=str(yr),
-                    line=dict(width=2), mode="lines+markers+text" if show_real_labels else "lines+markers",
+                    mode="lines+markers+text" if show_real_labels else "lines+markers",
                     text=[f"{real_vals[0]:.1f}%", f"{real_vals[1]:.1f}%", f"{real_vals[2]:.1f}", f"{real_vals[3]:.1f}%"] if show_real_labels else None,
                     textfont=dict(color=radar_text_color(), size=font_size)
                 ))
@@ -565,6 +577,7 @@ if (show_fin or show_radar or show_radar_mix) and len(selected) == 1:
                 paper_bgcolor=PAPER_BG, plot_bgcolor=PAPER_BG,
             )
             st.plotly_chart(fig_radar_all, use_container_width=True, config={"displaylogo": False})
+
 
 # =========================
 # 10) 平均年增率排行榜
