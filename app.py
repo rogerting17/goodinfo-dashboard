@@ -252,7 +252,11 @@ if st.sidebar.button("🔄 重新載入資料"):
     load_yoy_data.clear()
     load_financial_ratios.clear()
     fetch_history_from_2019.clear()
-    st.rerun()  # ✅ 新版 Streamlit 用這個
+    # 版本相容：優先用新版 rerun，否則退回 experimental_rerun
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
 
 # 顏色樣式
 BG_MAIN = "#0E1117" if is_dark else "#FFFFFF"
